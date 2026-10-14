@@ -580,6 +580,8 @@ fn system_delete_all(account_id: i64) -> Result<()> {
         }
         for slot in [
             Slot::Password,
+            Slot::Pop3Password,
+            Slot::SmtpPassword,
             Slot::RefreshToken,
             Slot::AccessToken,
             Slot::OAuthClientId,
