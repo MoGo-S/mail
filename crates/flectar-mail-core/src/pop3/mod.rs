@@ -112,7 +112,7 @@ pub async fn connect(
     port: u16,
     username: &str,
     password: &str,
-    security: ConnectionSecurity,
+    settings: &crate::models::MailConnectionSettings,
 ) -> Result<Session> {
     validate_atom(username)?;
     validate_atom(password)?;
@@ -124,10 +124,11 @@ pub async fn connect(
         .await
         .map_err(|_| pop3_error("connection timed out"))??;
     tcp.set_nodelay(true)?;
-    let implicit_tls = matches!(security, ConnectionSecurity::Tls)
-        || (security == ConnectionSecurity::Auto && port == 995);
+    let implicit_tls = matches!(settings.imap_security, ConnectionSecurity::Tls)
+        || (settings.imap_security == ConnectionSecurity::Auto && port == 995);
+    let connector = crate::imap::account_tls_connector(&settings.trusted_certificate_pem)?;
     let mut reader = if implicit_tls {
-        BufReader::new(Box::new(connect_tls(host, tcp).await?) as Stream)
+        BufReader::new(Box::new(connect_tls(host, tcp, &connector).await?) as Stream)
     } else {
         BufReader::new(Box::new(tcp) as Stream)
     };
@@ -137,7 +138,7 @@ pub async fn connect(
         // Never send USER/PASS on a plaintext connection.
         send_command(&mut reader, "STLS").await?;
         let raw = reader.into_inner();
-        reader = BufReader::new(Box::new(connect_tls(host, raw).await?) as Stream);
+        reader = BufReader::new(Box::new(connect_tls(host, raw, &connector).await?) as Stream);
     }
 
     send_command(&mut reader, &format!("USER {username}")).await?;
@@ -161,13 +162,13 @@ pub async fn connect(
     Ok(Session { io: reader, message_count: count })
 }
 
-async fn connect_tls<S>(host: &str, tcp: S) -> Result<TlsStream<S>>
+async fn connect_tls<S>(host: &str, tcp: S, connector: &tokio_rustls::TlsConnector) -> Result<TlsStream<S>>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let server_name = rustls::pki_types::ServerName::try_from(host.to_owned())
         .map_err(|_| pop3_error("invalid TLS server name"))?;
-    crate::imap::tls_connector()
+    connector
         .connect(server_name, tcp)
         .await
         .map_err(|e| CoreError::Tls(e.to_string()))
