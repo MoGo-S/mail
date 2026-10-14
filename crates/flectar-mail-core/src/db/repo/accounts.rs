@@ -14,7 +14,7 @@ fn account_from_row(row: &Row) -> rusqlite::Result<Account> {
         avatar_url: row.get("avatar_url")?,
         provider: Provider::from_storage(&row.get::<_, String>("provider")?),
         auth_kind: AuthKind::from_storage(&row.get::<_, String>("auth_kind")?),
-        mail_protocol: MailProtocol::from_storage(&row.get::<_, String>("mail_protocol")?),
+        mail_protocol: MailProtocol::from_storage(&row.get::<_, String>("incoming_protocol")?),
         sync_state: row.get("sync_state")?,
         sync_error: row.get("sync_error")?,
         can_create_top_level_mailbox: row.get::<_, i64>("can_create_top_level_mailbox")? != 0,
@@ -31,7 +31,7 @@ fn config_from_row(row: &Row) -> rusqlite::Result<AccountConfig> {
         avatar_url: row.get("avatar_url")?,
         provider: Provider::from_storage(&row.get::<_, String>("provider")?),
         auth_kind: AuthKind::from_storage(&row.get::<_, String>("auth_kind")?),
-        mail_protocol: MailProtocol::from_storage(&row.get::<_, String>("mail_protocol")?),
+        mail_protocol: MailProtocol::from_storage(&row.get::<_, String>("incoming_protocol")?),
         username: row.get("username")?,
         jmap_url: row.get("jmap_url")?,
         jmap_account_id: row.get("jmap_account_id")?,
@@ -46,7 +46,7 @@ fn config_from_row(row: &Row) -> rusqlite::Result<AccountConfig> {
 pub fn list(conn: &Connection) -> Result<Vec<Account>> {
     let mut stmt = conn.prepare(
         "SELECT id, email, display_name, avatar_url, provider, auth_kind,
-                mail_protocol, sync_state, sync_error, can_create_top_level_mailbox
+                incoming_protocol, sync_state, sync_error, can_create_top_level_mailbox
          FROM accounts
          WHERE sync_state <> ?1
          ORDER BY sort_order, id",
@@ -60,7 +60,7 @@ pub fn list(conn: &Connection) -> Result<Vec<Account>> {
 pub fn list_configs(conn: &Connection) -> Result<Vec<AccountConfig>> {
     let mut stmt = conn.prepare(
         "SELECT id, email, display_name, avatar_url, provider, auth_kind,
-                mail_protocol, username, jmap_url, jmap_account_id, imap_host,
+                incoming_protocol, username, jmap_url, jmap_account_id, imap_host,
                 imap_port, smtp_host, smtp_port, settings_json
          FROM accounts
          WHERE sync_state <> ?1
@@ -75,7 +75,7 @@ pub fn list_configs(conn: &Connection) -> Result<Vec<AccountConfig>> {
 pub fn get_config(conn: &Connection, id: i64) -> Result<Option<AccountConfig>> {
     let mut stmt = conn.prepare(
         "SELECT id, email, display_name, avatar_url, provider, auth_kind,
-                mail_protocol, username, jmap_url, jmap_account_id, imap_host,
+                incoming_protocol, username, jmap_url, jmap_account_id, imap_host,
                 imap_port, smtp_host, smtp_port, settings_json
          FROM accounts WHERE id = ?1",
     )?;
@@ -85,7 +85,7 @@ pub fn get_config(conn: &Connection, id: i64) -> Result<Option<AccountConfig>> {
 pub fn get(conn: &Connection, id: i64) -> Result<Option<Account>> {
     let mut stmt = conn.prepare(
         "SELECT id, email, display_name, avatar_url, provider, auth_kind,
-                mail_protocol, sync_state, sync_error, can_create_top_level_mailbox
+                incoming_protocol, sync_state, sync_error, can_create_top_level_mailbox
          FROM accounts WHERE id = ?1",
     )?;
     Ok(stmt.query_row(params![id], account_from_row).optional()?)
@@ -94,7 +94,7 @@ pub fn get(conn: &Connection, id: i64) -> Result<Option<Account>> {
 pub fn find_by_email(conn: &Connection, email: &str) -> Result<Option<Account>> {
     let mut stmt = conn.prepare(
         "SELECT id, email, display_name, avatar_url, provider, auth_kind,
-                mail_protocol, sync_state, sync_error, can_create_top_level_mailbox
+                incoming_protocol, sync_state, sync_error, can_create_top_level_mailbox
          FROM accounts
          WHERE email = ?1 COLLATE NOCASE
          LIMIT 1",
@@ -135,19 +135,20 @@ pub fn insert(conn: &Connection, a: &NewAccount) -> Result<i64> {
 pub fn insert_with_sync_state(conn: &Connection, a: &NewAccount, sync_state: &str) -> Result<i64> {
     let settings_json = serde_json::to_string(&AccountSettings::default())?;
     conn.execute(
-        "INSERT INTO accounts (email, display_name, avatar_url, provider, auth_kind, mail_protocol, username,
+        "INSERT INTO accounts (email, display_name, avatar_url, provider, auth_kind, mail_protocol, incoming_protocol, username,
                                jmap_url, jmap_account_id,
                                imap_host, imap_port, smtp_host, smtp_port, created_at,
                                sort_order, settings_json, sync_state,
                                can_create_top_level_mailbox)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,
-                 COALESCE((SELECT MAX(sort_order) + 1 FROM accounts), 0), ?15, ?16, ?17)",
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,
+                 COALESCE((SELECT MAX(sort_order) + 1 FROM accounts), 0), ?16, ?17, ?18)",
         params![
             a.email,
             a.display_name,
             a.avatar_url,
             a.provider.as_str(),
             a.auth_kind.as_str(),
+            a.mail_protocol.storage_str(),
             a.mail_protocol.as_str(),
             a.username,
             a.jmap_url,
