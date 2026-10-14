@@ -1072,15 +1072,20 @@ impl Core {
         {
             return Err(CoreError::Auth("an account field is too long".into()));
         }
-        if args.mail_protocol == MailProtocol::Imap
+        if matches!(args.mail_protocol, MailProtocol::Imap | MailProtocol::Pop3)
             && (args.imap_host.is_empty()
                 || args.smtp_host.is_empty()
                 || args.imap_port == 0
                 || args.smtp_port == 0)
         {
-            return Err(CoreError::Auth(
-                "IMAP and SMTP server hosts and ports are required".into(),
-            ));
+            let incoming = if args.mail_protocol == MailProtocol::Pop3 {
+                "POP3"
+            } else {
+                "IMAP"
+            };
+            return Err(CoreError::Auth(format!(
+                "{incoming} and SMTP server hosts and ports are required"
+            )));
         }
         let args = if args.mail_protocol == MailProtocol::Jmap {
             AddPasswordAccountArgs {
