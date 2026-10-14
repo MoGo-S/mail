@@ -294,7 +294,7 @@ export component OnboardingView inherits Rectangle {
                         text: @tr("IMAP + SMTP");
                         enabled: !root.account-setup-in-progress;
                         primary: root.account-protocol == "imap";
-                        clicked => { root.account-protocol = "imap"; }
+                        clicked => { root.account-protocol = "imap"; root.imap-port = "993"; }
                     }
                     Button {
                         horizontal-stretch: 1;

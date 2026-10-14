@@ -61,9 +61,9 @@ impl MailProtocol {
         }
     }
 
-    /// The existing SQLite CHECK constraint predates POP3 and only accepts
-    /// IMAP/JMAP. The actual receive protocol is stored in settings_json so
-    /// existing profiles can upgrade without rebuilding the accounts table.
+    /// The legacy SQLite mail_protocol column only accepts IMAP/JMAP. POP3
+    /// is persisted in the additive incoming_protocol column; this value keeps
+    /// the old column valid for existing profiles.
     pub const fn storage_str(self) -> &'static str {
         match self {
             Self::Pop3 => "imap",
