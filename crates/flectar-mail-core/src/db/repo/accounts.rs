@@ -149,6 +149,7 @@ pub fn insert_with_sync_state(conn: &Connection, a: &NewAccount, sync_state: &st
             a.provider.as_str(),
             a.auth_kind.as_str(),
             a.mail_protocol.storage_str(),
+            a.mail_protocol.storage_str(),
             a.mail_protocol.as_str(),
             a.username,
             a.jmap_url,
@@ -189,7 +190,7 @@ pub fn set_settings(conn: &Connection, id: i64, settings: &AccountSettings) -> R
 pub fn update_password(conn: &Connection, id: i64, a: &NewAccount) -> Result<()> {
     let (old_protocol, old_jmap_url, old_jmap_account_id): (String, String, Option<String>) = conn
         .query_row(
-            "SELECT mail_protocol,jmap_url,jmap_account_id FROM accounts WHERE id=?1",
+            "SELECT incoming_protocol,jmap_url,jmap_account_id FROM accounts WHERE id=?1",
             params![id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
@@ -215,9 +216,9 @@ pub fn update_password(conn: &Connection, id: i64, a: &NewAccount) -> Result<()>
     )?;
     conn.execute(
         "UPDATE accounts SET email = ?2, display_name = ?3, avatar_url = ?4, provider = ?5,
-                auth_kind = ?6, mail_protocol = ?7, username = ?8,
-                jmap_url = ?9, jmap_account_id = ?10, imap_host = ?11, imap_port = ?12,
-                smtp_host = ?13, smtp_port = ?14, sync_state = 'idle', sync_error = NULL
+                auth_kind = ?6, mail_protocol = ?7, incoming_protocol = ?8, username = ?9,
+                jmap_url = ?10, jmap_account_id = ?11, imap_host = ?12, imap_port = ?13,
+                smtp_host = ?14, smtp_port = ?15, sync_state = 'idle', sync_error = NULL
          WHERE id = ?1",
         params![
             id,
