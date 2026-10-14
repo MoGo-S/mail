@@ -20,6 +20,7 @@ pub mod graph;
 pub mod graphcal;
 mod http_body;
 pub mod imap;
+pub mod pop3;
 pub mod jmap;
 pub mod mail_security;
 pub mod mime;
