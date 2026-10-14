@@ -265,7 +265,7 @@ export component OnboardingView inherits Rectangle {
                     placeholder: @tr("Email address");
                     edited(value) => { root.account-email = value; root.suggest-account-settings(value); }
                 }
-                FormField {
+                if root.account-protocol != "pop3" : FormField {
                     enabled: !root.account-setup-in-progress;
                     height: 60px;
                     label: @tr("Username (defaults to email)");
@@ -274,7 +274,7 @@ export component OnboardingView inherits Rectangle {
                     placeholder: @tr("Username (defaults to email)");
                     edited(value) => { root.account-username = value; }
                 }
-                FormField {
+                if root.account-protocol != "pop3" : FormField {
                     enabled: !root.account-setup-in-progress;
                     height: 60px;
                     label: root.account-protocol == "jmap" ? @tr("Password, app password, or API token") : @tr("Password or app password");

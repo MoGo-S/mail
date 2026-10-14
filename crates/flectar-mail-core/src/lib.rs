@@ -948,6 +948,9 @@ impl Core {
     pub async fn test_connection(&self, args: &AddPasswordAccountArgs) -> ConnectionTestResult {
         let mut args = args.clone();
         args.password = normalize_account_password(args.password);
+        if args.password.is_empty() {
+            args.password = args.pop3_password.clone().unwrap_or_default();
+        }
         args.pop3_password = args.pop3_password.map(normalize_account_password);
         args.smtp_password = args.smtp_password.map(normalize_account_password);
         args.connection.pop3_username = args.pop3_username.clone().unwrap_or_else(|| args.username.clone());

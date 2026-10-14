@@ -6294,7 +6294,11 @@ pub fn run(platform: PlatformContext) -> Result<(), Box<dyn std::error::Error>> 
                     Ok(port) if port > 0 => port,
                     _ => {
                         app.set_sync_status(UiMessage::plain(
-                            "IMAP port must be between 1 and 65535.",
+                            if mail_protocol == MailProtocol::Pop3 {
+                                "POP3 port must be between 1 and 65535."
+                            } else {
+                                "IMAP port must be between 1 and 65535."
+                            },
                         ));
                         return;
                     }
@@ -6322,7 +6326,11 @@ pub fn run(platform: PlatformContext) -> Result<(), Box<dyn std::error::Error>> 
             app.set_sync_status(if mail_protocol == MailProtocol::Jmap {
                 UiMessage::plain("Discovering JMAP and checking capabilities…")
             } else {
-                UiMessage::plain("Testing IMAP and SMTP connections…")
+                UiMessage::plain(if mail_protocol == MailProtocol::Pop3 {
+                    "Testing POP3 and SMTP connections…"
+                } else {
+                    "Testing IMAP and SMTP connections…"
+                })
             });
             let args = AddPasswordAccountArgs {
                 email: email.to_string(),
