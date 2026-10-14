@@ -981,16 +981,41 @@ impl Core {
     }
 
     async fn check_imap_smtp(&self, args: &AddPasswordAccountArgs) -> Result<()> {
-        let creds = imap::ImapCredentials::Password {
-            user: args.username.clone(),
-            password: args.password.clone(),
-        };
-        let mut session =
-            imap::connect_with_settings(&args.imap_host, args.imap_port, creds, &args.connection)
+        match args.mail_protocol {
+            MailProtocol::Pop3 => {
+                let mut session = pop3::connect(
+                    &args.imap_host,
+                    args.imap_port,
+                    &args.username,
+                    &args.password,
+                    &args.connection,
+                )
                 .await?;
-        let mailbox_result = imap::select(&mut session, "INBOX").await.map(|_| ());
-        imap::logout(session).await;
-        mailbox_result?;
+                // Exercise UIDL during setup so servers that authenticate but
+                // cannot identify messages fail before the account is saved.
+                session.uidls().await?;
+                session.quit().await?;
+            }
+            MailProtocol::Imap => {
+                let creds = imap::ImapCredentials::Password {
+                    user: args.username.clone(),
+                    password: args.password.clone(),
+                };
+                let mut session = imap::connect_with_settings(
+                    &args.imap_host,
+                    args.imap_port,
+                    creds,
+                    &args.connection,
+                )
+                .await?;
+                let mailbox_result = imap::select(&mut session, "INBOX").await.map(|_| ());
+                imap::logout(session).await;
+                mailbox_result?;
+            }
+            MailProtocol::Jmap => {
+                return Err(CoreError::Other("JMAP uses a separate connection check".into()));
+            }
+        }
         let config = AccountConfig {
             id: 0,
             email: args.email.clone(),
@@ -998,7 +1023,7 @@ impl Core {
             avatar_url: None,
             provider: Provider::Imap,
             auth_kind: AuthKind::Password,
-            mail_protocol: MailProtocol::Imap,
+            mail_protocol: args.mail_protocol,
             username: args.username.clone(),
             jmap_url: String::new(),
             jmap_account_id: None,
