@@ -49,6 +49,9 @@ impl Session {
         for line in lines {
             let line = std::str::from_utf8(&line)
                 .map_err(|_| pop3_error("server returned non-ASCII UIDL data"))?;
+            if !line.is_ascii() {
+                return Err(pop3_error("server returned non-ASCII UIDL data"));
+            }
             let mut fields = line.split_ascii_whitespace();
             let number = fields
                 .next()
@@ -123,20 +126,18 @@ pub async fn connect(
     tcp.set_nodelay(true)?;
     let implicit_tls = matches!(security, ConnectionSecurity::Tls)
         || (security == ConnectionSecurity::Auto && port == 995);
-    let mut io: Stream = if implicit_tls {
-        Box::new(connect_tls(host, tcp).await?)
+    let mut reader = if implicit_tls {
+        BufReader::new(Box::new(connect_tls(host, tcp).await?) as Stream)
     } else {
-        Box::new(tcp)
+        BufReader::new(Box::new(tcp) as Stream)
     };
-    let mut reader = BufReader::new(io);
     read_status(&mut reader).await?;
 
     if !implicit_tls {
         // Never send USER/PASS on a plaintext connection.
         send_command(&mut reader, "STLS").await?;
         let raw = reader.into_inner();
-        io = Box::new(connect_tls(host, raw).await?);
-        reader = BufReader::new(io);
+        reader = BufReader::new(Box::new(connect_tls(host, raw).await?) as Stream);
     }
 
     send_command(&mut reader, &format!("USER {username}")).await?;
@@ -160,7 +161,10 @@ pub async fn connect(
     Ok(Session { io: reader, message_count: count })
 }
 
-async fn connect_tls(host: &str, tcp: TcpStream) -> Result<TlsStream<TcpStream>> {
+async fn connect_tls<S>(host: &str, tcp: S) -> Result<TlsStream<S>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let server_name = rustls::pki_types::ServerName::try_from(host.to_owned())
         .map_err(|_| pop3_error("invalid TLS server name"))?;
     crate::imap::tls_connector()
@@ -170,7 +174,10 @@ async fn connect_tls(host: &str, tcp: TcpStream) -> Result<TlsStream<TcpStream>>
 }
 
 fn validate_atom(value: &str) -> Result<()> {
-    if value.is_empty() || value.len() > 1024 || value.bytes().any(|b| matches!(b, b'\r' | b'\n' | 0)) {
+    if value.is_empty()
+        || value.len() > 1024
+        || value.bytes().any(|b| matches!(b, b'\r' | b'\n' | 0))
+    {
         return Err(pop3_error("invalid POP3 credential"));
     }
     Ok(())
