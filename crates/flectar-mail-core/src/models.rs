@@ -240,8 +240,6 @@ pub struct MailConnectionSettings {
     /// historical JSON key for backward compatibility with existing profiles.
     pub imap_security: ConnectionSecurity,
     pub smtp_security: ConnectionSecurity,
-    /// Incoming transport selection, including for portable account backups.
-    pub incoming_protocol: MailProtocol,
     /// POP3 defaults to preserving the server copy. Disabling this allows
     /// deleting only after all fetched messages have been committed locally.
     pub leave_on_server: bool,
@@ -255,7 +253,6 @@ impl Default for MailConnectionSettings {
         Self {
             imap_security: ConnectionSecurity::Auto,
             smtp_security: ConnectionSecurity::Auto,
-            incoming_protocol: MailProtocol::Imap,
             leave_on_server: true,
             trusted_certificate_pem: String::new(),
         }
