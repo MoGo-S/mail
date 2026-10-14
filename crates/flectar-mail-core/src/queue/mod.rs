@@ -928,7 +928,8 @@ async fn send_action(
     // so the Sent-folder sync dedupes against this row instead of duplicating.
     let sent_at = now_ms();
     let send_action_id = action.id;
-    let should_append_sent = config.provider != Provider::Gmail;
+    let should_append_sent = config.provider != Provider::Gmail
+        && config.mail_protocol == MailProtocol::Imap;
     let (thread_id, staged_paths) = ctx
         .db
         .write(move |conn| {

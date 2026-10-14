@@ -820,7 +820,12 @@ async fn pop3_sync_once(ctx: &SyncCtx, config: &AccountConfig) -> Result<()> {
     ).await?;
 
     let folder_id = ctx.db.write(move |conn| {
-        repo::folders::upsert(conn, account_id, "INBOX", Some("/"), Some(roles::INBOX))
+        let inbox = repo::folders::upsert(conn, account_id, "INBOX", Some("/"), Some(roles::INBOX))?;
+        // POP3 exposes one remote mailbox. Keep Sent and Drafts as local
+        // folders so the standard compose workflow still has destinations.
+        repo::folders::upsert(conn, account_id, "Sent", Some("/"), Some(roles::SENT))?;
+        repo::folders::upsert(conn, account_id, "Drafts", Some("/"), Some(roles::DRAFTS))?;
+        Ok(inbox)
     }).await?;
     let known_uidls = ctx.db.read(move |conn| {
         let mut statement = conn.prepare("SELECT uidl FROM pop3_uidls WHERE account_id = ?1")?;
