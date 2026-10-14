@@ -94,16 +94,7 @@ impl Session {
     }
 
     async fn command(&mut self, command: &str) -> Result<()> {
-        let (reader, _) = tokio::time::timeout(COMMAND_TIMEOUT, async {
-            self.io.write_all(command.as_bytes()).await?;
-            self.io.write_all(b"\r\n").await?;
-            self.io.flush().await?;
-            read_status(&mut self.io).await
-        })
-        .await
-        .map_err(|_| pop3_error("command timed out"))??;
-        let _ = reader;
-        Ok(())
+        send_command(&mut self.io, command).await
     }
 
     async fn multiline(&mut self) -> Result<Vec<String>> {
@@ -204,7 +195,7 @@ async fn connect_tls(host: &str, tcp: TcpStream) -> Result<TlsStream<TcpStream>>
 }
 
 fn validate_atom(value: &str) -> Result<()> {
-    if value.is_empty() || value.len() > 1024 || value.contains(['\r', '\n', '\0']) {
+    if value.is_empty() || value.len() > 1024 || value.bytes().any(|b| matches!(b, b'\r' | b'\n' | 0)) {
         return Err(pop3_error("invalid POP3 credential"));
     }
     Ok(())
