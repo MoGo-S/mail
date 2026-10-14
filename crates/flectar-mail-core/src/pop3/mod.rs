@@ -47,6 +47,8 @@ impl Session {
         let lines = self.multiline().await?;
         let mut messages = Vec::with_capacity(lines.len());
         for line in lines {
+            let line = std::str::from_utf8(&line)
+                .map_err(|_| pop3_error("server returned non-ASCII UIDL data"))?;
             let mut fields = line.split_ascii_whitespace();
             let number = fields
                 .next()
@@ -75,7 +77,7 @@ impl Session {
         let size = lines.iter().map(|line| line.len() + 2).sum::<usize>();
         let mut message = Vec::with_capacity(size);
         for line in lines {
-            message.extend_from_slice(line.as_bytes());
+            message.extend_from_slice(&line);
             message.extend_from_slice(b"\r\n");
         }
         Ok(message)
@@ -97,21 +99,8 @@ impl Session {
         send_command(&mut self.io, command).await
     }
 
-    async fn multiline(&mut self) -> Result<Vec<String>> {
-        let mut lines = Vec::new();
-        let mut total = 0usize;
-        loop {
-            let line = read_line(&mut self.io).await?;
-            if line == "." {
-                return Ok(lines);
-            }
-            total = total.saturating_add(line.len() + 2);
-            if total > MAX_RESPONSE_BYTES {
-                return Err(pop3_error("server response exceeded the 64 MiB limit"));
-            }
-            // RFC 1939 dot transparency: remove exactly one leading dot.
-            lines.push(line.strip_prefix("..").map_or(line.clone(), |v| format!(".{v}")));
-        }
+    async fn multiline(&mut self) -> Result<Vec<Vec<u8>>> {
+        read_multiline(&mut self.io).await
     }
 }
 
@@ -143,15 +132,7 @@ pub async fn connect(
     read_status(&mut reader).await?;
 
     if !implicit_tls {
-        // Never send USER/PASS on a plaintext connection. Require STLS even
-        // when a server advertises no CAPA support.
-        let (mut reader, stls) = match capability_stls(&mut reader).await {
-            Ok(stls) => (reader, stls),
-            Err(_) => (reader, true),
-        };
-        if !stls {
-            return Err(pop3_error("server does not offer required TLS encryption"));
-        }
+        // Never send USER/PASS on a plaintext connection.
         send_command(&mut reader, "STLS").await?;
         let raw = reader.into_inner();
         io = Box::new(connect_tls(host, raw).await?);
@@ -160,8 +141,8 @@ pub async fn connect(
 
     send_command(&mut reader, &format!("USER {username}")).await?;
     send_command(&mut reader, &format!("PASS {password}")).await?;
-    send_command(&mut reader, "STAT").await?;
-    let stat = read_line(&mut reader).await?;
+    let stat = send_command(&mut reader, "STAT").await?;
+    let stat = stat.strip_prefix("+OK").ok_or_else(|| pop3_error("invalid STAT response"))?;
     let mut parts = stat.split_ascii_whitespace();
     let count = parts
         .next()
@@ -177,12 +158,6 @@ pub async fn connect(
     }
 
     Ok(Session { io: reader, message_count: count })
-}
-
-async fn capability_stls(reader: &mut BufReader<Stream>) -> Result<bool> {
-    send_command(reader, "CAPA").await?;
-    let lines = read_multiline(reader).await?;
-    Ok(lines.iter().any(|line| line.eq_ignore_ascii_case("STLS")))
 }
 
 async fn connect_tls(host: &str, tcp: TcpStream) -> Result<TlsStream<TcpStream>> {
@@ -201,7 +176,7 @@ fn validate_atom(value: &str) -> Result<()> {
     Ok(())
 }
 
-async fn send_command(reader: &mut BufReader<Stream>, command: &str) -> Result<()> {
+async fn send_command(reader: &mut BufReader<Stream>, command: &str) -> Result<String> {
     tokio::time::timeout(COMMAND_TIMEOUT, async {
         reader.get_mut().write_all(command.as_bytes()).await?;
         reader.get_mut().write_all(b"\r\n").await?;
@@ -209,14 +184,13 @@ async fn send_command(reader: &mut BufReader<Stream>, command: &str) -> Result<(
         read_status(reader).await
     })
     .await
-    .map_err(|_| pop3_error("command timed out"))??;
-    Ok(())
+    .map_err(|_| pop3_error("command timed out"))?
 }
 
-async fn read_status<R: AsyncRead + Unpin>(reader: &mut R) -> Result<()> {
-    let line = read_line(reader).await?;
+async fn read_status<R: AsyncRead + Unpin>(reader: &mut R) -> Result<String> {
+    let line = read_control_line(reader).await?;
     if line.starts_with("+OK") {
-        Ok(())
+        Ok(line)
     } else if line.starts_with("-ERR") {
         Err(CoreError::Auth(line.trim_start_matches("-ERR").trim().to_owned()))
     } else {
@@ -224,23 +198,32 @@ async fn read_status<R: AsyncRead + Unpin>(reader: &mut R) -> Result<()> {
     }
 }
 
-async fn read_multiline<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<String>> {
+async fn read_multiline<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<Vec<u8>>> {
     let mut lines = Vec::new();
     let mut total = 0usize;
     loop {
-        let line = read_line(reader).await?;
-        if line == "." {
+        let mut line = read_raw_line(reader).await?;
+        if line == b"." {
             return Ok(lines);
         }
         total = total.saturating_add(line.len() + 2);
         if total > MAX_RESPONSE_BYTES {
             return Err(pop3_error("server response exceeded the 64 MiB limit"));
         }
-        lines.push(line.strip_prefix("..").map_or(line.clone(), |v| format!(".{v}")));
+        // RFC 1939 dot transparency: remove exactly one leading dot.
+        if line.starts_with(b"..") {
+            line.remove(0);
+        }
+        lines.push(line);
     }
 }
 
-async fn read_line<R: AsyncRead + Unpin>(reader: &mut R) -> Result<String> {
+async fn read_control_line<R: AsyncRead + Unpin>(reader: &mut R) -> Result<String> {
+    String::from_utf8(read_raw_line(reader).await?)
+        .map_err(|_| pop3_error("server returned invalid protocol text"))
+}
+
+async fn read_raw_line<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     loop {
         let byte = reader.read_u8().await?;
@@ -255,7 +238,7 @@ async fn read_line<R: AsyncRead + Unpin>(reader: &mut R) -> Result<String> {
             return Err(pop3_error("server line exceeded the 16 KiB limit"));
         }
     }
-    String::from_utf8(bytes).map_err(|_| pop3_error("server returned non-UTF-8 protocol data"))
+    Ok(bytes)
 }
 
 fn pop3_error(message: &str) -> CoreError {
