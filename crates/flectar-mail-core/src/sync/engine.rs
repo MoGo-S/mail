@@ -253,8 +253,8 @@ pub struct SyncCtx {
 
 pub fn spawn_account(ctx: SyncCtx, config: AccountConfig) -> AccountHandle {
     let account_id = config.id;
-    let dedicated_smtp =
-        config.provider != Provider::Gmail && config.mail_protocol == MailProtocol::Imap;
+    let dedicated_smtp = config.provider != Provider::Gmail
+        && matches!(config.mail_protocol, MailProtocol::Imap | MailProtocol::Pop3);
     let (tx, rx) = mpsc::channel(SYNC_COMMAND_QUEUE_CAPACITY);
     let (body_tx, body_rx) = mpsc::channel(PRIORITY_FETCH_QUEUE_CAPACITY);
     let (send_tx, send_rx) = mpsc::channel(1);
@@ -267,6 +267,8 @@ pub fn spawn_account(ctx: SyncCtx, config: AccountConfig) -> AccountHandle {
         crate::sync::gmail::spawn(ctx, config, rx, body_rx, settings_rx)
     } else if config.mail_protocol == MailProtocol::Jmap {
         crate::jmap::sync::spawn(ctx, config, rx, body_rx, settings_rx)
+    } else if config.mail_protocol == MailProtocol::Pop3 {
+        vec![tokio::spawn(run_pop3_actor(ctx, config, rx))]
     } else {
         vec![
             tokio::spawn(run_send_dispatcher(
@@ -744,6 +746,178 @@ async fn imap_credentials(ctx: &SyncCtx, config: &AccountConfig) -> Result<ImapC
             })
         }
     }
+}
+
+async fn run_pop3_actor(
+    ctx: SyncCtx,
+    config: AccountConfig,
+    mut rx: mpsc::Receiver<SyncCmd>,
+) {
+    let account_id = config.id;
+    crate::events::sync_diagnostic("pop3_worker", Some(account_id), "started");
+    let interval = configured_sync_interval(&ctx.db).await;
+    let mut sync_requested = true;
+
+    loop {
+        if sync_requested {
+            match pop3_sync_once(&ctx, &config).await {
+                Ok(()) => {
+                    let _ = ctx.db.write(move |conn| repo::accounts::set_sync_state_with_error(conn, account_id, "idle", None)).await;
+                    ctx.bus.emit(CoreEvent::NetworkState { online: true });
+                }
+                Err(error @ CoreError::Auth(_)) => {
+                    crate::events::sync_diagnostic("pop3_sync", Some(account_id), error.code());
+                    let message = error.to_string();
+                    let _ = ctx.db.write(move |conn| repo::accounts::set_sync_state_with_error(conn, account_id, "needs_reauth", Some(&message))).await;
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    tracing::warn!(account_id, error = %message, "POP3 sync failed");
+                    let _ = ctx.db.write(move |conn| repo::accounts::set_sync_state_with_error(conn, account_id, "offline", Some(&message))).await;
+                    ctx.bus.emit(CoreEvent::NetworkState { online: false });
+                }
+            }
+        }
+        sync_requested = false;
+        tokio::select! {
+            _ = tokio::time::sleep(interval) => sync_requested = true,
+            command = rx.recv() => match command {
+                None | Some(SyncCmd::Shutdown) => return,
+                Some(SyncCmd::SyncNow { complete }) => {
+                    sync_requested = true;
+                    if let Some(complete) = complete {
+                        let result = pop3_sync_once(&ctx, &config).await.map_err(|error| error.to_string());
+                        let _ = complete.send(result);
+                        sync_requested = false;
+                    }
+                }
+                Some(SyncCmd::RunActions) => {}
+                Some(SyncCmd::FetchBody { .. }) => {}
+            }
+        }
+    }
+}
+
+/// POP3 has no folders or stable sequence numbers. UIDL is persisted separately
+/// from the local folder UID, and full messages are cached as they arrive.
+async fn pop3_sync_once(ctx: &SyncCtx, config: &AccountConfig) -> Result<()> {
+    let account_id = config.id;
+    let username = if config.settings.connection.pop3_username.is_empty() {
+        &config.username
+    } else {
+        &config.settings.connection.pop3_username
+    };
+    let password = match credentials::load_async(ctx.credentials.clone(), account_id, Slot::Pop3Password).await {
+        Ok(password) => password,
+        Err(_) => credentials::load_async(ctx.credentials.clone(), account_id, Slot::Password).await?,
+    };
+    let mut session = crate::pop3::connect(
+        &config.imap_host,
+        config.imap_port,
+        username,
+        &password,
+        &config.settings.connection,
+    ).await?;
+
+    let folder_id = ctx.db.write(move |conn| {
+        repo::folders::upsert(conn, account_id, "INBOX", Some("/"), Some(roles::INBOX))
+    }).await?;
+    let known_uidls = ctx.db.read(move |conn| {
+        let mut statement = conn.prepare("SELECT uidl FROM pop3_uidls WHERE account_id = ?1")?;
+        Ok(statement.query_map([account_id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?)
+    }).await?;
+
+    let mut thread_ids = Vec::new();
+    for remote in session.uidls().await? {
+        if known_uidls.contains(&remote.uidl) {
+            continue;
+        }
+        let raw = session.retrieve(remote.number).await?;
+        let headers = crate::mime::parse_header_block(&raw)?;
+        let parsed = crate::mime::parse_message(&raw)?;
+        let now = now_ms();
+        let date_ms = headers.date_ms.unwrap_or(now);
+        let is_outgoing = headers.from.as_ref().is_some_and(|from| from.email.eq_ignore_ascii_case(&config.email));
+        let local_uid = ctx.db.read(move |conn| {
+            conn.query_row(
+                "SELECT COALESCE(MAX(uid), 0) + 1 FROM messages WHERE folder_id = ?1",
+                [folder_id],
+                |row| row.get::<_, i64>(0),
+            ).map_err(Into::into)
+        }).await?;
+        let uid = u32::try_from(local_uid).map_err(|_| CoreError::Other("POP3 local message index overflow".into()))?;
+        let message_id = if let Some(mid) = headers.message_id.as_deref() {
+            let mid = mid.to_owned();
+            ctx.db.read(move |conn| repo::messages::by_message_id(conn, account_id, &mid))
+                .await?
+                .map(|row| row.id)
+        } else {
+            None
+        };
+        let raw_len = raw.len() as i64;
+        let message_id = if let Some(message_id) = message_id {
+            message_id
+        } else {
+            let parsed_for_insert = headers.clone();
+            ctx.db.write(move |conn| {
+                let tx = conn.transaction()?;
+                let thread_id = crate::sync::threading::resolve_thread(&tx, account_id, &parsed_for_insert, date_ms)?;
+                let item = NewMessage {
+                    account_id,
+                    folder_id,
+                    uid: Some(i64::from(uid)),
+                    message_id: parsed_for_insert.message_id.clone(),
+                    gm_msgid: None,
+                    gm_thrid: None,
+                    subject: parsed_for_insert.subject.clone(),
+                    from: parsed_for_insert.from.clone(),
+                    to: parsed_for_insert.to.clone(),
+                    cc: parsed_for_insert.cc.clone(),
+                    bcc: parsed_for_insert.bcc.clone(),
+                    date: date_ms,
+                    internal_date: None,
+                    is_read: is_outgoing,
+                    is_starred: false,
+                    is_draft: false,
+                    is_outgoing,
+                    is_automated: parsed_for_insert.is_automated,
+                    has_attachments: !parsed.attachments.is_empty(),
+                    size: Some(raw_len),
+                    snippet: parsed.snippet.clone(),
+                    references: parsed_for_insert.references.clone(),
+                    list_unsubscribe: parsed_for_insert.list_unsubscribe.clone(),
+                    list_unsubscribe_post: parsed_for_insert.list_unsubscribe_post.clone(),
+                    sender_addr: parsed_for_insert.via.clone(),
+                    sender_verification: parsed_for_insert.sender_verification,
+                };
+                let id = repo::messages::insert(&tx, &item, thread_id)?;
+                repo::threads::recompute(&tx, thread_id)?;
+                repo::search::index_message(&tx, id)?;
+                tx.commit()?;
+                Ok(id)
+            }).await?
+        };
+        persist_body(ctx, config, message_id, folder_id, uid, &raw).await?;
+        let uidl = remote.uidl;
+        ctx.db.write(move |conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO pop3_uidls (account_id, uidl, message_id) VALUES (?1, ?2, ?3)",
+                rusqlite::params![account_id, uidl, message_id],
+            )?;
+            Ok(())
+        }).await?;
+        if let Some(thread_id) = ctx.db.read(move |conn| {
+            Ok(repo::messages::get_row(conn, message_id)?.and_then(|row| row.thread_id))
+        }).await? {
+            if !thread_ids.contains(&thread_id) { thread_ids.push(thread_id); }
+        }
+    }
+    session.quit().await?;
+    if !thread_ids.is_empty() {
+        ctx.bus.emit(CoreEvent::MailUpdated { thread_ids });
+    }
+    Ok(())
 }
 
 async fn run_actor(
