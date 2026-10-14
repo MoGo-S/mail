@@ -240,6 +240,10 @@ pub struct MailConnectionSettings {
     /// historical JSON key for backward compatibility with existing profiles.
     pub imap_security: ConnectionSecurity,
     pub smtp_security: ConnectionSecurity,
+    /// Incoming POP3 login; empty preserves the legacy account username.
+    pub pop3_username: String,
+    /// Outgoing SMTP login; empty preserves the legacy account username.
+    pub smtp_username: String,
     /// POP3 defaults to preserving the server copy. Disabling this allows
     /// deleting only after all fetched messages have been committed locally.
     pub leave_on_server: bool,
@@ -253,6 +257,8 @@ impl Default for MailConnectionSettings {
         Self {
             imap_security: ConnectionSecurity::Auto,
             smtp_security: ConnectionSecurity::Auto,
+            pop3_username: String::new(),
+            smtp_username: String::new(),
             leave_on_server: true,
             trusted_certificate_pem: String::new(),
         }
@@ -808,6 +814,16 @@ pub struct AddPasswordAccountArgs {
     pub display_name: Option<String>,
     pub username: String,
     pub password: String,
+    /// Separate incoming POP3 credentials; omitted fields inherit the legacy credentials.
+    #[serde(default)]
+    pub pop3_username: Option<String>,
+    #[serde(default)]
+    pub pop3_password: Option<String>,
+    /// Separate outgoing SMTP credentials; omitted fields inherit the legacy credentials.
+    #[serde(default)]
+    pub smtp_username: Option<String>,
+    #[serde(default)]
+    pub smtp_password: Option<String>,
     #[serde(default)]
     pub mail_protocol: MailProtocol,
     #[serde(default)]

@@ -948,6 +948,10 @@ impl Core {
     pub async fn test_connection(&self, args: &AddPasswordAccountArgs) -> ConnectionTestResult {
         let mut args = args.clone();
         args.password = normalize_account_password(args.password);
+        args.pop3_password = args.pop3_password.map(normalize_account_password);
+        args.smtp_password = args.smtp_password.map(normalize_account_password);
+        args.connection.pop3_username = args.pop3_username.clone().unwrap_or_else(|| args.username.clone());
+        args.connection.smtp_username = args.smtp_username.clone().unwrap_or_else(|| args.username.clone());
         if args.mail_protocol == MailProtocol::Jmap {
             return match crate::jmap::client::connect_with(
                 &args.email,
@@ -986,8 +990,8 @@ impl Core {
                 let mut session = pop3::connect(
                     &args.imap_host,
                     args.imap_port,
-                    &args.username,
-                    &args.password,
+                    args.pop3_username.as_deref().unwrap_or(&args.username),
+                    args.pop3_password.as_deref().unwrap_or(&args.password),
                     &args.connection,
                 )
                 .await?;
@@ -1036,7 +1040,7 @@ impl Core {
                 ..Default::default()
             },
         };
-        smtp::test_connection(&config, &smtp::SmtpAuth::Password(args.password.clone())).await
+        smtp::test_connection(&config, &smtp::SmtpAuth::Password(args.smtp_password.clone().unwrap_or_else(|| args.password.clone()))).await
     }
 
     pub async fn add_account_password(&self, args: AddPasswordAccountArgs) -> Result<Account> {
@@ -1051,6 +1055,10 @@ impl Core {
                 .filter(|value| !value.is_empty()),
             username: args.username.trim().to_owned(),
             password: normalize_account_password(args.password),
+            pop3_username: args.pop3_username.map(|value| value.trim().to_owned()).filter(|value| !value.is_empty()),
+            pop3_password: args.pop3_password.map(normalize_account_password),
+            smtp_username: args.smtp_username.map(|value| value.trim().to_owned()).filter(|value| !value.is_empty()),
+            smtp_password: args.smtp_password.map(normalize_account_password),
             mail_protocol: args.mail_protocol,
             jmap_url: args.jmap_url.trim().to_owned(),
             imap_host: args.imap_host.trim().to_owned(),
@@ -1063,8 +1071,25 @@ impl Core {
             args.username = args.email.clone();
         }
         if args.password.is_empty() {
-            return Err(CoreError::Auth("email and password are required".into()));
+            args.password = args.pop3_password.clone().unwrap_or_default();
         }
+        if args.password.is_empty() {
+            return Err(CoreError::Auth("email and incoming password are required".into()));
+        }
+        if args.mail_protocol == MailProtocol::Pop3 && args.pop3_password.is_none() {
+            args.pop3_password = Some(args.password.clone());
+        }
+        if args.smtp_password.is_none() {
+            args.smtp_password = Some(args.password.clone());
+        }
+        if args.pop3_username.is_none() {
+            args.pop3_username = Some(args.username.clone());
+        }
+        if args.smtp_username.is_none() {
+            args.smtp_username = Some(args.username.clone());
+        }
+        args.connection.pop3_username = args.pop3_username.clone().unwrap_or_else(|| args.username.clone());
+        args.connection.smtp_username = args.smtp_username.clone().unwrap_or_else(|| args.username.clone());
         if args.username.len() > 512
             || args.jmap_url.len() > 2048
             || args.imap_host.len() > 253
@@ -1252,6 +1277,17 @@ impl Core {
                 self.spawn_actor(cfg).await;
             }
             return Err(error);
+        }
+
+        if args.mail_protocol == MailProtocol::Pop3 {
+            credentials::store_async(
+                self.credentials.clone(), id, Slot::Pop3Password,
+                args.pop3_password.as_deref().unwrap_or(&args.password).to_owned(),
+            ).await?;
+            credentials::store_async(
+                self.credentials.clone(), id, Slot::SmtpPassword,
+                args.smtp_password.as_deref().unwrap_or(&args.password).to_owned(),
+            ).await?;
         }
 
         if is_new_account

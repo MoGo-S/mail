@@ -16,6 +16,8 @@ const MAX_INSECURE_CREDENTIAL_FILE_BYTES: u64 = 1024 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Slot {
     Password,
+    Pop3Password,
+    SmtpPassword,
     RefreshToken,
     AccessToken,
     /// OAuth application registration that issued this account's refresh
@@ -40,6 +42,8 @@ impl Slot {
     pub fn as_str(&self) -> &'static str {
         match self {
             Slot::Password => "password",
+            Slot::Pop3Password => "pop3_password",
+            Slot::SmtpPassword => "smtp_password",
             Slot::RefreshToken => "refresh_token",
             Slot::AccessToken => "access_token",
             Slot::OAuthClientId => "oauth_client_id",

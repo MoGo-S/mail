@@ -276,7 +276,12 @@ async fn imported_certificate_connection(
         )
         .await
         .map_err(|error| map_smtp_error(cfg, error))?;
-        let (credentials, mechanisms) = smtp_auth(auth, &cfg.username);
+        let username = if cfg.settings.connection.smtp_username.is_empty() {
+            &cfg.username
+        } else {
+            &cfg.settings.connection.smtp_username
+        };
+        let (credentials, mechanisms) = smtp_auth(auth, username);
         connection
             .auth(&mechanisms, &credentials)
             .await
