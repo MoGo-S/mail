@@ -45,6 +45,10 @@ export component OnboardingView inherits Rectangle {
     in property <color> ui-border;
     in-out property <string> account-email: "";
     in-out property <string> account-password: "";
+    in-out property <string> pop3-username: "";
+    in-out property <string> pop3-password: "";
+    in-out property <string> smtp-username: "";
+    in-out property <string> smtp-password: "";
     in-out property <string> account-protocol: "imap";
     in-out property <string> jmap-url: "";
     in-out property <string> imap-host: "";
@@ -53,14 +57,14 @@ export component OnboardingView inherits Rectangle {
     in-out property <string> smtp-port: "465";
     in-out property <bool> imap-form-open: false;
     private property <bool> show-account-status: false;
-    callback add-password-account(string, string, string, string, string, string, string, string, string);
+    callback add-password-account(string, string, string, string, string, string, string, string, string, string, string, string, string);
     callback suggest-account-settings(string);
     callback start-oauth(string);
     callback cancel-oauth();
     callback import-account-backup();
 
     private property <bool> imap-form-valid: root.account-email != ""
-        && root.account-password != ""
+        && (root.account-password != "" || (root.account-protocol == "pop3" && root.pop3-password != ""))
         && (root.account-protocol == "jmap" || (
             root.imap-host != ""
             && root.imap-port != ""
@@ -71,6 +75,10 @@ export component OnboardingView inherits Rectangle {
         root.account-email = "";
         root.account-username = "";
         root.account-password = "";
+        root.pop3-username = "";
+        root.pop3-password = "";
+        root.smtp-username = "";
+        root.smtp-password = "";
         root.account-protocol = "imap";
         root.jmap-url = "";
         root.imap-security = "auto";
@@ -241,7 +249,7 @@ export component OnboardingView inherits Rectangle {
                     horizontal-alignment: center;
                 }
                 Text {
-                    text: root.account-protocol == "jmap" ? @tr("Connect using JMAP for mail sync and sending.") : @tr("Connect using IMAP and SMTP. POP3 is not supported.");
+                    text: root.account-protocol == "jmap" ? @tr("Connect using JMAP for mail sync and sending.") : (root.account-protocol == "pop3" ? @tr("Connect using POP3 for mail sync and SMTP for sending.") : @tr("Connect using IMAP and SMTP."));
                     wrap: word-wrap; height: self.preferred-height;
                     color: root.muted-text;
                     font-size: TypeScale.secondary;
@@ -291,11 +299,57 @@ export component OnboardingView inherits Rectangle {
                     Button {
                         horizontal-stretch: 1;
                         height: 42px;
+                        text: @tr("POP3 + SMTP");
+                        enabled: !root.account-setup-in-progress;
+                        primary: root.account-protocol == "pop3";
+                        clicked => { root.account-protocol = "pop3"; root.imap-port = "995"; }
+                    }
+                    Button {
+                        horizontal-stretch: 1;
+                        height: 42px;
                         text: @tr("JMAP");
                         enabled: !root.account-setup-in-progress;
                         primary: root.account-protocol == "jmap";
                         clicked => { root.account-protocol = "jmap"; }
                     }
+                }
+                if root.account-protocol == "pop3" : FormField {
+                    enabled: !root.account-setup-in-progress;
+                    height: 60px;
+                    label: @tr("POP3 username");
+                    label-color: root.muted-text;
+                    value: root.pop3-username;
+                    placeholder: @tr("Defaults to the account username");
+                    edited(value) => { root.pop3-username = value; }
+                }
+                if root.account-protocol == "pop3" : FormField {
+                    enabled: !root.account-setup-in-progress;
+                    height: 60px;
+                    label: @tr("POP3 password or app password");
+                    label-color: root.muted-text;
+                    value: root.pop3-password;
+                    input-type: password;
+                    placeholder: @tr("POP3 password");
+                    edited(value) => { root.pop3-password = value; }
+                }
+                if root.account-protocol == "pop3" : FormField {
+                    enabled: !root.account-setup-in-progress;
+                    height: 60px;
+                    label: @tr("SMTP username");
+                    label-color: root.muted-text;
+                    value: root.smtp-username;
+                    placeholder: @tr("Defaults to the account username");
+                    edited(value) => { root.smtp-username = value; }
+                }
+                if root.account-protocol == "pop3" : FormField {
+                    enabled: !root.account-setup-in-progress;
+                    height: 60px;
+                    label: @tr("SMTP password or app password");
+                    label-color: root.muted-text;
+                    value: root.smtp-password;
+                    input-type: password;
+                    placeholder: @tr("Defaults to the POP3 password");
+                    edited(value) => { root.smtp-password = value; }
                 }
                 if root.account-protocol == "jmap" : LineEdit {
                     height: 42px;
@@ -309,17 +363,17 @@ export component OnboardingView inherits Rectangle {
                     font-size: TypeScale.caption;
                     wrap: word-wrap; height: self.preferred-height;
                 }
-                if root.account-protocol == "imap" : HorizontalBox {
+                if root.account-protocol == "imap" || root.account-protocol == "pop3" : HorizontalBox {
                     height: 60px;
                     padding: 0px;
                     spacing: 8px;
                     FormField {
                         enabled: !root.account-setup-in-progress;
                         horizontal-stretch: 1;
-                        label: @tr("IMAP server");
+                        label: root.account-protocol == "pop3" ? @tr("POP3 server") : @tr("IMAP server");
                         label-color: root.muted-text;
                         value: root.imap-host;
-                        placeholder: @tr("IMAP server");
+                        placeholder: root.account-protocol == "pop3" ? @tr("POP3 server") : @tr("IMAP server");
                         edited(value) => { root.imap-host = value; }
                     }
                     FormField {
@@ -397,6 +451,10 @@ export component OnboardingView inherits Rectangle {
                             root.account-email,
                             root.account-username,
                             root.account-password,
+                            root.pop3-username,
+                            root.pop3-password,
+                            root.smtp-username,
+                            root.smtp-password,
                             root.jmap-url,
                             root.imap-host,
                             root.imap-port,
