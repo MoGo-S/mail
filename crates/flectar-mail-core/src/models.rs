@@ -44,6 +44,9 @@ pub enum AuthKind {
 pub enum MailProtocol {
     /// RFC 8620/8621 JMAP Mail and EmailSubmission.
     Jmap,
+    /// POP3 retrieval with SMTP submission. POP3 is intentionally separate
+    /// from IMAP: it has no folders, flags, or remote moves.
+    Pop3,
     /// IMAP access plus SMTP submission compatibility mode.
     #[default]
     Imap,
@@ -53,15 +56,26 @@ impl MailProtocol {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Jmap => "jmap",
+            Self::Pop3 => "pop3",
             Self::Imap => "imap",
         }
     }
 
+    /// The existing SQLite CHECK constraint predates POP3 and only accepts
+    /// IMAP/JMAP. The actual receive protocol is stored in settings_json so
+    /// existing profiles can upgrade without rebuilding the accounts table.
+    pub const fn storage_str(self) -> &'static str {
+        match self {
+            Self::Pop3 => "imap",
+            other => other.as_str(),
+        }
+    }
+
     pub fn from_storage(value: &str) -> Self {
-        if value.eq_ignore_ascii_case("jmap") {
-            Self::Jmap
-        } else {
-            Self::Imap
+        match value.to_ascii_lowercase().as_str() {
+            "jmap" => Self::Jmap,
+            "pop3" => Self::Pop3,
+            _ => Self::Imap,
         }
     }
 }
@@ -219,14 +233,33 @@ impl ConnectionSecurity {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct MailConnectionSettings {
+    /// Security for the incoming transport (IMAP or POP3). Kept under the
+    /// historical JSON key for backward compatibility with existing profiles.
     pub imap_security: ConnectionSecurity,
     pub smtp_security: ConnectionSecurity,
+    /// Incoming transport selection, including for portable account backups.
+    pub incoming_protocol: MailProtocol,
+    /// POP3 defaults to preserving the server copy. Disabling this allows
+    /// deleting only after all fetched messages have been committed locally.
+    pub leave_on_server: bool,
     /// Additional trust anchors for this account only; normal hostname and
     /// validity checks still apply. Contains public certificates, never keys.
     pub trusted_certificate_pem: String,
+}
+
+impl Default for MailConnectionSettings {
+    fn default() -> Self {
+        Self {
+            imap_security: ConnectionSecurity::Auto,
+            smtp_security: ConnectionSecurity::Auto,
+            incoming_protocol: MailProtocol::Imap,
+            leave_on_server: true,
+            trusted_certificate_pem: String::new(),
+        }
+    }
 }
 
 /// Typed contents of `accounts.settings_json`.
