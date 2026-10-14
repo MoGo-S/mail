@@ -831,6 +831,9 @@ async fn pop3_sync_once(ctx: &SyncCtx, config: &AccountConfig) -> Result<()> {
     let mut thread_ids = Vec::new();
     for remote in session.uidls().await? {
         if known_uidls.contains(&remote.uidl) {
+            if !config.settings.connection.leave_on_server {
+                session.delete(remote.number).await?;
+            }
             continue;
         }
         let raw = session.retrieve(remote.number).await?;
@@ -847,20 +850,22 @@ async fn pop3_sync_once(ctx: &SyncCtx, config: &AccountConfig) -> Result<()> {
             ).map_err(Into::into)
         }).await?;
         let uid = u32::try_from(local_uid).map_err(|_| CoreError::Other("POP3 local message index overflow".into()))?;
-        let message_id = if let Some(mid) = headers.message_id.as_deref() {
+        let existing = if let Some(mid) = headers.message_id.as_deref() {
             let mid = mid.to_owned();
-            ctx.db.read(move |conn| repo::messages::by_message_id(conn, account_id, &mid))
-                .await?
-                .map(|row| row.id)
+            ctx.db.read(move |conn| repo::messages::by_message_id(conn, account_id, &mid)).await?
         } else {
             None
         };
+        let existing = existing.filter(|row| row.folder_id == Some(folder_id));
         let raw_len = raw.len() as i64;
-        let message_id = if let Some(message_id) = message_id {
-            message_id
+        let (message_id, uid) = if let Some(existing) = existing {
+            let existing_uid = existing.uid
+                .and_then(|value| u32::try_from(value).ok())
+                .unwrap_or(uid);
+            (existing.id, existing_uid)
         } else {
             let parsed_for_insert = headers.clone();
-            ctx.db.write(move |conn| {
+            let id = ctx.db.write(move |conn| {
                 let tx = conn.transaction()?;
                 let thread_id = crate::sync::threading::resolve_thread(&tx, account_id, &parsed_for_insert, date_ms)?;
                 let item = NewMessage {
@@ -896,7 +901,8 @@ async fn pop3_sync_once(ctx: &SyncCtx, config: &AccountConfig) -> Result<()> {
                 repo::search::index_message(&tx, id)?;
                 tx.commit()?;
                 Ok(id)
-            }).await?
+            }).await?;
+            (id, uid)
         };
         persist_body(ctx, config, message_id, folder_id, uid, &raw).await?;
         let uidl = remote.uidl;
@@ -907,6 +913,9 @@ async fn pop3_sync_once(ctx: &SyncCtx, config: &AccountConfig) -> Result<()> {
             )?;
             Ok(())
         }).await?;
+        if !config.settings.connection.leave_on_server {
+            session.delete(remote.number).await?;
+        }
         if let Some(thread_id) = ctx.db.read(move |conn| {
             Ok(repo::messages::get_row(conn, message_id)?.and_then(|row| row.thread_id))
         }).await? {

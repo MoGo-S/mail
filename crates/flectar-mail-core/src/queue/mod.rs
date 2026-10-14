@@ -825,14 +825,15 @@ async fn send_action(
 
     let auth = match config.auth_kind {
         AuthKind::Password => {
-            let slot = if config.mail_protocol == MailProtocol::Pop3 {
-                Slot::SmtpPassword
+            let password = if config.mail_protocol == MailProtocol::Pop3 {
+                match credentials::load_async(ctx.credentials.clone(), config.id, Slot::SmtpPassword).await {
+                    Ok(password) => password,
+                    Err(_) => credentials::load_async(ctx.credentials.clone(), config.id, Slot::Password).await?,
+                }
             } else {
-                Slot::Password
+                credentials::load_async(ctx.credentials.clone(), config.id, Slot::Password).await?
             };
-            smtp::SmtpAuth::Password(
-                credentials::load_async(ctx.credentials.clone(), config.id, slot).await?,
-            )
+            smtp::SmtpAuth::Password(password)
         },
         AuthKind::Oauth2 => {
             smtp::SmtpAuth::XOAuth2(ctx.tokens.access_token(config.id, config.provider).await?)
