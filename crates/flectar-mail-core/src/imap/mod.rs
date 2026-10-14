@@ -235,7 +235,7 @@ pub fn trusted_certificates(pem: &str) -> Result<Vec<rustls::pki_types::Certific
     Ok(certificates)
 }
 
-pub(crate) fn account_tls_connector(pem: &str) -> Result<TlsConnector> {
+pub(crate) pub(crate) fn account_tls_connector(pem: &str) -> Result<TlsConnector> {
     if pem.is_empty() {
         return Ok(tls_connector());
     }
